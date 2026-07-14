@@ -8,8 +8,12 @@ import os
 # __file__ is src/config.py → go one level up to project root
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DB_PATH     = os.path.join(ROOT_DIR, "expenses.db")
-REPORTS_DIR = os.path.join(ROOT_DIR, "reports")
+# DB_PATH     = os.path.join(ROOT_DIR, "expenses.db")
+# REPORTS_DIR = os.path.join(ROOT_DIR, "reports")
+DB_DIR      = os.environ.get("DB_DIR", "/tmp")
+DB_PATH     = os.path.join(DB_DIR, "expenses.db")
+REPORTS_DIR = os.environ.get("REPORTS_DIR", os.path.join(DB_DIR, "reports"))
+os.makedirs(REPORTS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 # ── App Identity ───────────────────────────────────────────────────────────────
