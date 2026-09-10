@@ -12,7 +12,7 @@ Design notes:
 # ── Expenses ──────────────────────────────────────────────────────────────────
 EXPENSES = """
 CREATE TABLE IF NOT EXISTS expenses (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     title           TEXT    NOT NULL,
     amount          REAL    NOT NULL CHECK(amount > 0),
     description     TEXT    DEFAULT '',
@@ -27,15 +27,15 @@ CREATE TABLE IF NOT EXISTS expenses (
     tags            TEXT    DEFAULT '',        -- comma-separated
     notes           TEXT    DEFAULT '',
     is_deleted      INTEGER DEFAULT 0,        -- 0 = active, 1 = soft-deleted
-    created_at      TEXT    DEFAULT (datetime('now')),
-    updated_at      TEXT    DEFAULT (datetime('now'))
+    created_at      TIMESTAMP DEFAULT NOW(),
+    updated_at      TIMESTAMP DEFAULT NOW()
 )
 """
 
 # ── Categories & Subcategories ────────────────────────────────────────────────
 CATEGORIES = """
 CREATE TABLE IF NOT EXISTS categories (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    id      SERIAL PRIMARY KEY,
     name    TEXT    NOT NULL UNIQUE,
     icon    TEXT    DEFAULT '💰'
 )
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS categories (
 
 SUBCATEGORIES = """
 CREATE TABLE IF NOT EXISTS subcategories (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
     name        TEXT    NOT NULL,
     UNIQUE(category_id, name)
@@ -53,38 +53,38 @@ CREATE TABLE IF NOT EXISTS subcategories (
 # ── Friends ───────────────────────────────────────────────────────────────────
 FRIENDS = """
 CREATE TABLE IF NOT EXISTS friends (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    id      SERIAL PRIMARY KEY,
     name    TEXT NOT NULL,
     email   TEXT DEFAULT '',
     phone   TEXT DEFAULT '',
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TIMESTAMP DEFAULT NOW()
 )
 """
 
 # ── General Balances (Splitwise-lite, non-event) ──────────────────────────────
 BALANCES = """
 CREATE TABLE IF NOT EXISTS balances (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     friend_id   INTEGER NOT NULL REFERENCES friends(id) ON DELETE CASCADE,
     amount      REAL    NOT NULL CHECK(amount > 0),
-    direction   TEXT    NOT NULL CHECK(direction IN ('i_paid', 'they_paid')),
+    direction   TEXT    NOT NULL CHECK(direction IN ('i_owe', 'they_owe')),
     reason      TEXT    DEFAULT '',
     expense_id  INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
     status      TEXT    DEFAULT 'pending' CHECK(status IN ('pending', 'settled')),
-    created_at  TEXT    DEFAULT (datetime('now'))
+    created_at  TIMESTAMP DEFAULT NOW()
 )
 """
 
 # ── Events ────────────────────────────────────────────────────────────────────
 EVENTS = """
 CREATE TABLE IF NOT EXISTS events (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     title       TEXT NOT NULL,
     description TEXT DEFAULT '',
     start_date  TEXT DEFAULT '',
     end_date    TEXT DEFAULT '',
     status      TEXT DEFAULT 'active' CHECK(status IN ('active', 'closed')),
-    created_at  TEXT DEFAULT (datetime('now'))
+    created_at  TIMESTAMP DEFAULT NOW()
 )
 """
 
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS event_members (
 
 EVENT_EXPENSES = """
 CREATE TABLE IF NOT EXISTS event_expenses (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  SERIAL PRIMARY KEY,
     event_id            INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
     expense_id          INTEGER REFERENCES expenses(id) ON DELETE SET NULL,
     title               TEXT NOT NULL,
@@ -107,28 +107,28 @@ CREATE TABLE IF NOT EXISTS event_expenses (
     split_type          TEXT NOT NULL CHECK(split_type IN ('equal','percentage','custom')),
     -- JSON string: {"friend_id": amount, ...}  for percentage/custom splits
     split_data          TEXT DEFAULT '{}',
-    created_at          TEXT DEFAULT (datetime('now'))
+    created_at          TIMESTAMP DEFAULT NOW()
 )
 """
 
 # ── Settlements ───────────────────────────────────────────────────────────────
 SETTLEMENTS = """
 CREATE TABLE IF NOT EXISTS settlements (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     from_friend_id  INTEGER NOT NULL REFERENCES friends(id),
     to_friend_id    INTEGER NOT NULL REFERENCES friends(id),
     amount          REAL    NOT NULL CHECK(amount > 0),
     event_id        INTEGER REFERENCES events(id) ON DELETE SET NULL,
     status          TEXT    DEFAULT 'pending' CHECK(status IN ('pending', 'settled')),
     settled_at      TEXT    DEFAULT '',
-    created_at      TEXT    DEFAULT (datetime('now'))
+    created_at      TIMESTAMP DEFAULT NOW()
 )
 """
 
 # ── Budgets ───────────────────────────────────────────────────────────────────
 BUDGETS = """
 CREATE TABLE IF NOT EXISTS budgets (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          SERIAL PRIMARY KEY,
     category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
     month       INTEGER NOT NULL CHECK(month BETWEEN 1 AND 12),
     year        INTEGER NOT NULL,
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS budgets (
 # ── Recurring Expenses ────────────────────────────────────────────────────────
 RECURRING = """
 CREATE TABLE IF NOT EXISTS recurring_expenses (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              SERIAL PRIMARY KEY,
     title           TEXT    NOT NULL,
     amount          REAL    NOT NULL CHECK(amount > 0),
     category_id     INTEGER REFERENCES categories(id) ON DELETE SET NULL,
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS recurring_expenses (
     frequency       TEXT    NOT NULL CHECK(frequency IN ('daily','weekly','monthly','yearly')),
     next_due_date   TEXT    NOT NULL,   -- ISO 8601: YYYY-MM-DD
     is_active       INTEGER DEFAULT 1,  -- 0 = paused
-    created_at      TEXT    DEFAULT (datetime('now'))
+    created_at      TIMESTAMP DEFAULT NOW()
 )
 """
 

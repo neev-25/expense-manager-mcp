@@ -19,12 +19,12 @@ class BalanceCreate(BaseModel):
     Record a money exchange between you and a friend.
 
     direction:
-      "i_paid"    → I paid for the friend   → friend owes me
-      "they_paid" → Friend paid for me       → I owe the friend
+      "i_owe"    → I owe the friend
+      "they_owe" → Friend owes me
     """
     friend_id: int = Field(..., description="ID of the friend")
     amount: float = Field(..., gt=0, description="Amount exchanged, must be > 0")
-    direction: str = Field(..., description="'i_paid' or 'they_paid'")
+    direction: str = Field(..., description="'i_owe' or 'they_owe'")
     reason: str = Field("", description="Brief reason, e.g. 'Dinner at Domino\\'s'")
     expense_id: Optional[int] = Field(None, description="Link to an existing expense if applicable")
 
@@ -33,7 +33,7 @@ class BalanceCreate(BaseModel):
             "example": {
                 "friend_id": 1,
                 "amount": 500,
-                "direction": "i_paid",
+                "direction": "i_owe",
                 "reason": "Flight ticket for Girnar trip"
             }
         }

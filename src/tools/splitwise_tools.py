@@ -30,16 +30,9 @@ def register(mcp):
         expense_id: Optional[int] = None,
     ) -> dict:
         """
-        Record a money exchange with a friend.
-
-        direction options:
-          "i_paid"    → I paid for them   → they owe me ₹amount
-          "they_paid" → They paid for me  → I owe them ₹amount
-
-        Examples:
-          - "Rahul owes me ₹500 for recharge"        → direction='i_paid',    friend_id=Rahul's id
-          - "I paid ₹120 for Prince for chai"         → direction='i_paid',    friend_id=Prince's id
-          - "Jay paid ₹200 for my food at Domino's"  → direction='they_paid', friend_id=Jay's id
+        direction:
+          "i_owe"    → I owe them
+          "they_owe" → They owe me
         """
         return svc.record_balance(BalanceCreate(
             friend_id=friend_id, amount=amount,

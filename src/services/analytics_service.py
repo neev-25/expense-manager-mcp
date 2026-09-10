@@ -24,8 +24,8 @@ def monthly_summary(year: int, month: int) -> dict:
             SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
             FROM expenses
             WHERE is_deleted=0
-              AND strftime('%Y', expense_date) = ?
-              AND strftime('%m', expense_date) = ?
+              AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
+              AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
         """, (y_str, m_str)).fetchone()
 
         # Days in month for avg calculation
@@ -40,8 +40,8 @@ def monthly_summary(year: int, month: int) -> dict:
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
             WHERE e.is_deleted=0
-              AND strftime('%Y', e.expense_date) = ?
-              AND strftime('%m', e.expense_date) = ?
+              AND SUBSTRING(CAST(e.expense_date AS text) FROM 1 FOR 4) = %s
+              AND SUBSTRING(CAST(e.expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY category
             ORDER BY total DESC
         """, (y_str, m_str)).fetchall()
@@ -51,8 +51,8 @@ def monthly_summary(year: int, month: int) -> dict:
             SELECT payment_method, SUM(amount) AS total, COUNT(*) AS count
             FROM expenses
             WHERE is_deleted=0
-              AND strftime('%Y', expense_date) = ?
-              AND strftime('%m', expense_date) = ?
+              AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
+              AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY payment_method
             ORDER BY total DESC
         """, (y_str, m_str)).fetchall()
@@ -62,8 +62,8 @@ def monthly_summary(year: int, month: int) -> dict:
             SELECT merchant, SUM(amount) AS total
             FROM expenses
             WHERE is_deleted=0 AND merchant != ''
-              AND strftime('%Y', expense_date) = ?
-              AND strftime('%m', expense_date) = ?
+              AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
+              AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY merchant
             ORDER BY total DESC
             LIMIT 1
@@ -96,12 +96,12 @@ def yearly_summary(year: int) -> dict:
     """Month-by-month breakdown for a full year."""
     with get_connection() as conn:
         rows = conn.execute("""
-            SELECT strftime('%m', expense_date) AS month,
+            SELECT SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) AS month,
                    SUM(amount) AS total,
                    COUNT(*) AS count
             FROM expenses
             WHERE is_deleted=0
-              AND strftime('%Y', expense_date) = ?
+              AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
             GROUP BY month
             ORDER BY month
         """, (str(year),)).fetchall()
@@ -125,10 +125,10 @@ def category_summary(year: int | None = None, month: int | None = None) -> list[
     params: list = []
 
     if year:
-        conditions.append("strftime('%Y', e.expense_date) = ?")
+        conditions.append("SUBSTRING(CAST(e.expense_date AS text) FROM 1 FOR 4) = %s")
         params.append(str(year))
     if month:
-        conditions.append("strftime('%m', e.expense_date) = ?")
+        conditions.append("SUBSTRING(CAST(e.expense_date AS text) FROM 6 FOR 2) = %s")
         params.append(f"{month:02d}")
 
     where = "WHERE " + " AND ".join(conditions)
@@ -154,10 +154,10 @@ def payment_summary(year: int | None = None, month: int | None = None) -> list[d
     conditions = ["is_deleted = 0"]
     params: list = []
     if year:
-        conditions.append("strftime('%Y', expense_date) = ?")
+        conditions.append("SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s")
         params.append(str(year))
     if month:
-        conditions.append("strftime('%m', expense_date) = ?")
+        conditions.append("SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s")
         params.append(f"{month:02d}")
 
     where = "WHERE " + " AND ".join(conditions)
@@ -185,7 +185,7 @@ def budget_summary(year: int, month: int) -> list[dict]:
             SELECT b.id, b.amount AS budget_amount, c.name AS category, b.category_id
             FROM budgets b
             JOIN categories c ON b.category_id = c.id
-            WHERE b.month=? AND b.year=?
+            WHERE b.month=%s AND b.year=%s
         """, (month, year)).fetchall()
 
         results = []
@@ -194,9 +194,9 @@ def budget_summary(year: int, month: int) -> list[dict]:
                 SELECT COALESCE(SUM(amount), 0) AS spent
                 FROM expenses
                 WHERE is_deleted=0
-                  AND category_id=?
-                  AND strftime('%Y', expense_date) = ?
-                  AND strftime('%m', expense_date) = ?
+                  AND category_id=%s
+                  AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
+                  AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
             """, (b["category_id"], y_str, m_str)).fetchone()
 
             spent = spent_row["spent"]
@@ -228,7 +228,7 @@ def set_budget(category_id: int, month: int, year: int, amount: float) -> dict:
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO budgets(category_id, month, year, amount)
-            VALUES (?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT(category_id, month, year) DO UPDATE SET amount=excluded.amount
         """, (category_id, month, year, amount))
     return {"status": "ok", "category_id": category_id, "month": month, "year": year, "amount": amount}

@@ -21,10 +21,10 @@ def _row_to_dict(row) -> dict:
 def add_friend(data: FriendCreate) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO friends(name, email, phone) VALUES (?, ?, ?)",
+            "INSERT INTO friends(name, email, phone) VALUES (%s, %s, %s) RETURNING id",
             (data.name, data.email, data.phone)
         )
-        return {"status": "ok", "id": cur.lastrowid, "name": data.name}
+        return {"status": "ok", "id": cur.fetchone()["id"], "name": data.name}
 
 
 def list_friends() -> list[dict]:
@@ -35,7 +35,7 @@ def list_friends() -> list[dict]:
 
 def get_friend(friend_id: int) -> dict:
     with get_connection() as conn:
-        row = conn.execute("SELECT * FROM friends WHERE id=?", (friend_id,)).fetchone()
+        row = conn.execute("SELECT * FROM friends WHERE id=%s", (friend_id,)).fetchone()
     if not row:
         raise ValueError(f"Friend id={friend_id} not found.")
     return _row_to_dict(row)
@@ -45,19 +45,19 @@ def get_friend(friend_id: int) -> dict:
 def record_balance(data: BalanceCreate) -> dict:
     """
     Record a money exchange.
-    direction = "i_paid"    → friend owes me money
-    direction = "they_paid" → I owe the friend money
+    direction = "i_owe"    → friend owes me money
+    direction = "they_owe" → I owe the friend money
     """
-    if data.direction not in ("i_paid", "they_paid"):
-        raise ValueError("direction must be 'i_paid' or 'they_paid'.")
+    if data.direction not in ("i_owe", "they_owe"):
+        raise ValueError("direction must be 'i_owe' or 'they_owe'.")
 
     with get_connection() as conn:
         cur = conn.execute(
             """INSERT INTO balances(friend_id, amount, direction, reason, expense_id)
-               VALUES (?, ?, ?, ?, ?)""",
+               VALUES (%s, %s, %s, %s, %s)""",
             (data.friend_id, data.amount, data.direction, data.reason, data.expense_id)
         )
-    return {"status": "ok", "balance_id": cur.lastrowid}
+    return {"status": "ok", "balance_id": cur.fetchone()["id"]}
 
 
 def settle_balance(friend_id: int, amount: float | None = None) -> dict:
@@ -68,13 +68,13 @@ def settle_balance(friend_id: int, amount: float | None = None) -> dict:
     with get_connection() as conn:
         if amount is None:
             conn.execute(
-                "UPDATE balances SET status='settled' WHERE friend_id=? AND status='pending'",
+                "UPDATE balances SET status='settled' WHERE friend_id=%s AND status='pending'",
                 (friend_id,)
             )
         else:
             # Mark individual rows until amount is consumed
             rows = conn.execute(
-                "SELECT * FROM balances WHERE friend_id=? AND status='pending' ORDER BY id",
+                "SELECT * FROM balances WHERE friend_id=%s AND status='pending' ORDER BY id",
                 (friend_id,)
             ).fetchall()
             remaining = amount
@@ -82,7 +82,7 @@ def settle_balance(friend_id: int, amount: float | None = None) -> dict:
                 if remaining <= 0:
                     break
                 if r["amount"] <= remaining:
-                    conn.execute("UPDATE balances SET status='settled' WHERE id=?", (r["id"],))
+                    conn.execute("UPDATE balances SET status='settled' WHERE id=%s", (r["id"],))
                     remaining -= r["amount"]
     return {"status": "ok", "friend_id": friend_id}
 
@@ -96,24 +96,24 @@ def friend_balance_summary(friend_id: int) -> dict:
     with get_connection() as conn:
         friend = get_friend(friend_id)
         rows = conn.execute(
-            "SELECT direction, SUM(amount) AS total FROM balances WHERE friend_id=? AND status='pending' GROUP BY direction",
+            "SELECT direction, SUM(amount) AS total FROM balances WHERE friend_id=%s AND status='pending' GROUP BY direction",
             (friend_id,)
         ).fetchall()
 
-    i_paid = 0.0
-    they_paid = 0.0
+    they_owe_me = 0.0
+    i_owe_them = 0.0
     for r in rows:
-        if r["direction"] == "i_paid":
-            i_paid = r["total"]
+        if r["direction"] == "they_owe":
+            they_owe_me = r["total"]
         else:
-            they_paid = r["total"]
+            i_owe_them = r["total"]
 
-    net = round(i_paid - they_paid, 2)
+    net = round(they_owe_me - i_owe_them, 2)
     return {
         "friend": friend["name"],
         "friend_id": friend_id,
-        "they_owe_me": round(i_paid, 2),
-        "i_owe_them": round(they_paid, 2),
+        "they_owe_me": round(they_owe_me, 2),
+        "i_owe_them": round(i_owe_them, 2),
         "net": net,
         "summary": (
             f"{friend['name']} owes you ₹{net}" if net > 0
@@ -127,8 +127,8 @@ def overall_balance() -> dict:
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT f.id, f.name,
-                   COALESCE(SUM(CASE WHEN b.direction='i_paid'    THEN b.amount ELSE 0 END), 0) AS they_owe_me,
-                   COALESCE(SUM(CASE WHEN b.direction='they_paid' THEN b.amount ELSE 0 END), 0) AS i_owe_them
+                   COALESCE(SUM(CASE WHEN b.direction='they_owe' THEN b.amount ELSE 0 END), 0) AS they_owe_me,
+                   COALESCE(SUM(CASE WHEN b.direction='i_owe'    THEN b.amount ELSE 0 END), 0) AS i_owe_them
             FROM friends f
             LEFT JOIN balances b ON b.friend_id=f.id AND b.status='pending'
             GROUP BY f.id
@@ -163,13 +163,13 @@ def overall_balance() -> dict:
 def create_event(data: EventCreate) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO events(title, description, start_date, end_date) VALUES (?,?,?,?)",
+            "INSERT INTO events(title, description, start_date, end_date) VALUES (%s,%s,%s,%s) RETURNING id",
             (data.title, data.description, data.start_date, data.end_date)
         )
-        event_id = cur.lastrowid
+        event_id = cur.fetchone()["id"]
         for fid in data.member_ids:
             conn.execute(
-                "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (?,?)",
+                "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (%s,%s)",
                 (event_id, fid)
             )
     return {"status": "ok", "event_id": event_id, "title": data.title}
@@ -178,7 +178,7 @@ def create_event(data: EventCreate) -> dict:
 def add_event_member(event_id: int, friend_id: int) -> dict:
     with get_connection() as conn:
         conn.execute(
-            "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (?,?)",
+            "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (%s,%s)",
             (event_id, friend_id)
         )
     return {"status": "ok"}
@@ -193,7 +193,7 @@ def add_event_expense(data: EventExpenseCreate) -> dict:
     # Determine the set of members to split among
     with get_connection() as conn:
         member_rows = conn.execute(
-            "SELECT friend_id FROM event_members WHERE event_id=?", (data.event_id,)
+            "SELECT friend_id FROM event_members WHERE event_id=%s", (data.event_id,)
         ).fetchall()
     all_member_ids = [r["friend_id"] for r in member_rows]
 
@@ -227,7 +227,7 @@ def add_event_expense(data: EventExpenseCreate) -> dict:
         cur = conn.execute("""
             INSERT INTO event_expenses
                 (event_id, title, amount, paid_by_friend_id, split_type, split_data)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
         """, (
             data.event_id, data.title, data.amount,
             data.paid_by_friend_id, data.split_type,
@@ -236,7 +236,7 @@ def add_event_expense(data: EventExpenseCreate) -> dict:
 
     return {
         "status": "ok",
-        "event_expense_id": cur.lastrowid,
+        "event_expense_id": cur.fetchone()["id"],
         "split": computed_split,
         "payer_id": data.paid_by_friend_id,
     }
@@ -250,18 +250,18 @@ def event_summary(event_id: int) -> dict:
     from src.services.settlement_service import compute_minimal_settlements
 
     with get_connection() as conn:
-        event = conn.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        event = conn.execute("SELECT * FROM events WHERE id=%s", (event_id,)).fetchone()
         if not event:
             raise ValueError(f"Event id={event_id} not found.")
 
         members_rows = conn.execute("""
             SELECT f.id, f.name FROM event_members em
             JOIN friends f ON f.id=em.friend_id
-            WHERE em.event_id=?
+            WHERE em.event_id=%s
         """, (event_id,)).fetchall()
 
         expenses_rows = conn.execute(
-            "SELECT * FROM event_expenses WHERE event_id=?", (event_id,)
+            "SELECT * FROM event_expenses WHERE event_id=%s", (event_id,)
         ).fetchall()
 
     members = {r["id"]: r["name"] for r in members_rows}
@@ -295,5 +295,5 @@ def event_summary(event_id: int) -> dict:
 
 def close_event(event_id: int) -> dict:
     with get_connection() as conn:
-        conn.execute("UPDATE events SET status='closed' WHERE id=?", (event_id,))
+        conn.execute("UPDATE events SET status='closed' WHERE id=%s", (event_id,))
     return {"status": "closed", "event_id": event_id}

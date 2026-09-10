@@ -25,12 +25,13 @@ def create_expense(data: ExpenseCreate) -> dict:
             (title, amount, description, category_id, subcategory_id, merchant,
              payment_method, currency, location, expense_date, receipt_url, tags, notes)
         VALUES
-            (:title, :amount, :description, :category_id, :subcategory_id, :merchant,
-             :payment_method, :currency, :location, :expense_date, :receipt_url, :tags, :notes)
+            (%(title)s, %(amount)s, %(description)s, %(category_id)s, %(subcategory_id)s, %(merchant)s,
+             %(payment_method)s, %(currency)s, %(location)s, %(expense_date)s, %(receipt_url)s, %(tags)s, %(notes)s)
+        RETURNING id
     """
     with get_connection() as conn:
         cur = conn.execute(sql, data.model_dump())
-        new_id = cur.lastrowid
+        new_id = cur.fetchone()["id"]
     return get_expense(new_id)
 
 
@@ -41,7 +42,7 @@ def get_expense(expense_id: int) -> dict:
         FROM expenses e
         LEFT JOIN categories c ON e.category_id = c.id
         LEFT JOIN subcategories s ON e.subcategory_id = s.id
-        WHERE e.id = ?
+        WHERE e.id = %s
     """
     with get_connection() as conn:
         row = conn.execute(sql, (expense_id,)).fetchone()
@@ -62,7 +63,7 @@ def update_expense(expense_id: int, data: ExpenseUpdate) -> dict:
     fields["id"] = expense_id
 
     with get_connection() as conn:
-        conn.execute(f"UPDATE expenses SET {set_clause} WHERE id = :id", fields)
+        conn.execute(f"UPDATE expenses SET {set_clause} WHERE id = %(id)s", fields)
     return get_expense(expense_id)
 
 
@@ -71,7 +72,7 @@ def delete_expense(expense_id: int) -> dict:
     """Soft delete — marks is_deleted=1 so it can be restored later."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE expenses SET is_deleted=1, updated_at=? WHERE id=?",
+            "UPDATE expenses SET is_deleted=1, updated_at=%s WHERE id=%s",
             (datetime.now().isoformat(), expense_id)
         )
     return {"status": "deleted", "id": expense_id}
@@ -81,7 +82,7 @@ def restore_expense(expense_id: int) -> dict:
     """Restore a soft-deleted expense."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE expenses SET is_deleted=0, updated_at=? WHERE id=?",
+            "UPDATE expenses SET is_deleted=0, updated_at=%s WHERE id=%s",
             (datetime.now().isoformat(), expense_id)
         )
     return get_expense(expense_id)
@@ -107,62 +108,62 @@ def list_expenses(filters: Optional[ExpenseFilters] = None) -> list[dict]:
 
     # Date range
     if filters.start_date:
-        conditions.append("e.expense_date >= :start_date")
+        conditions.append("e.expense_date >= %(start_date)s")
         params["start_date"] = filters.start_date
     if filters.end_date:
-        conditions.append("e.expense_date <= :end_date")
+        conditions.append("e.expense_date <= %(end_date)s")
         params["end_date"] = filters.end_date
 
     # Month / Year shortcut
     if filters.year:
-        conditions.append("strftime('%Y', e.expense_date) = :year")
+        conditions.append("SUBSTRING(CAST(e.expense_date AS text) FROM 1 FOR 4) = %(year)s")
         params["year"] = str(filters.year)
     if filters.month:
-        conditions.append("strftime('%m', e.expense_date) = :month")
+        conditions.append("SUBSTRING(CAST(e.expense_date AS text) FROM 6 FOR 2) = %(month)s")
         params["month"] = f"{filters.month:02d}"
 
     # Category / Subcategory
     if filters.category_id:
-        conditions.append("e.category_id = :category_id")
+        conditions.append("e.category_id = %(category_id)s")
         params["category_id"] = filters.category_id
     if filters.subcategory_id:
-        conditions.append("e.subcategory_id = :subcategory_id")
+        conditions.append("e.subcategory_id = %(subcategory_id)s")
         params["subcategory_id"] = filters.subcategory_id
 
     # Amount range
     if filters.min_amount is not None:
-        conditions.append("e.amount >= :min_amount")
+        conditions.append("e.amount >= %(min_amount)s")
         params["min_amount"] = filters.min_amount
     if filters.max_amount is not None:
-        conditions.append("e.amount <= :max_amount")
+        conditions.append("e.amount <= %(max_amount)s")
         params["max_amount"] = filters.max_amount
 
     # Text search (partial LIKE matches)
     if filters.merchant:
-        conditions.append("e.merchant LIKE :merchant")
+        conditions.append("e.merchant LIKE %(merchant)s")
         params["merchant"] = f"%{filters.merchant}%"
     if filters.location:
-        conditions.append("e.location LIKE :location")
+        conditions.append("e.location LIKE %(location)s")
         params["location"] = f"%{filters.location}%"
     if filters.tags:
-        conditions.append("e.tags LIKE :tags")
+        conditions.append("e.tags LIKE %(tags)s")
         params["tags"] = f"%{filters.tags}%"
     if filters.notes:
-        conditions.append("e.notes LIKE :notes")
+        conditions.append("e.notes LIKE %(notes)s")
         params["notes"] = f"%{filters.notes}%"
 
     # Payment method / Currency
     if filters.payment_method:
-        conditions.append("e.payment_method = :payment_method")
+        conditions.append("e.payment_method = %(payment_method)s")
         params["payment_method"] = filters.payment_method
     if filters.currency:
-        conditions.append("e.currency = :currency")
+        conditions.append("e.currency = %(currency)s")
         params["currency"] = filters.currency
 
     # Event filter
     if filters.event_id:
         conditions.append("""
-            e.id IN (SELECT expense_id FROM event_expenses WHERE event_id = :event_id)
+            e.id IN (SELECT expense_id FROM event_expenses WHERE event_id = %(event_id)s)
         """)
         params["event_id"] = filters.event_id
 

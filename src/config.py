@@ -3,18 +3,19 @@ config.py — Central configuration for the Smart Expense MCP.
 All paths, constants, and enums live here so nothing is hard-coded elsewhere.
 """
 import os
+from dotenv import load_dotenv
+
+# Load variables from .env if present
+load_dotenv()
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 # __file__ is src/config.py → go one level up to project root
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# DB_PATH     = os.path.join(ROOT_DIR, "expenses.db")
-# REPORTS_DIR = os.path.join(ROOT_DIR, "reports")
-DB_DIR      = os.environ.get("DB_DIR", "/tmp")
-DB_PATH     = os.path.join(DB_DIR, "expenses.db")
-REPORTS_DIR = os.environ.get("REPORTS_DIR", os.path.join(DB_DIR, "reports"))
+NEON_DATABASE_URL = os.environ.get("NEON_DATABASE_URL", "")
+REPORTS_DIR = os.environ.get("REPORTS_DIR", "/tmp/reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
-os.makedirs(REPORTS_DIR, exist_ok=True)
+
 
 # ── App Identity ───────────────────────────────────────────────────────────────
 APP_NAME         = "SmartExpenseMCP"
@@ -37,10 +38,9 @@ PAYMENT_METHODS = [
 # ── Split Types for Events ─────────────────────────────────────────────────────
 SPLIT_TYPES = ["equal", "percentage", "custom"]
 
-# ── Balance Directions ─────────────────────────────────────────────────────────
-# "i_paid"   → I paid for the friend  (friend owes me)
-# "they_paid" → Friend paid for me    (I owe the friend)
-BALANCE_DIRECTIONS = ["i_paid", "they_paid"]
+# "i_owe"   → I owe the friend
+# "they_owe" → Friend owes me
+BALANCE_DIRECTIONS = ["i_owe", "they_owe"]
 
 # ── Budget Alert Thresholds ────────────────────────────────────────────────────
 BUDGET_WARNING_PCT  = 80   # 🟡 Yellow warning

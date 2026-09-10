@@ -57,17 +57,17 @@ def seed_categories() -> None:
     with get_connection() as conn:
         for cat in DEFAULT_CATEGORIES:
             conn.execute(
-                "INSERT OR IGNORE INTO categories(name, icon) VALUES (?, ?)",
+                "INSERT INTO categories(name, icon) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
                 (cat["name"], cat["icon"])
             )
             row = conn.execute(
-                "SELECT id FROM categories WHERE name = ?", (cat["name"],)
+                "SELECT id FROM categories WHERE name = %s", (cat["name"],)
             ).fetchone()
             cat_id = row["id"]
 
             for sub in cat["subs"]:
                 conn.execute(
-                    "INSERT OR IGNORE INTO subcategories(category_id, name) VALUES (?, ?)",
+                    "INSERT INTO subcategories(category_id, name) VALUES (%s, %s) ON CONFLICT (category_id, name) DO NOTHING",
                     (cat_id, sub)
                 )
     print("[DB] Default categories seeded.")
