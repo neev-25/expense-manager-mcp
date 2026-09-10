@@ -50,7 +50,6 @@ def startup():
     run_migrations()
     print(f"[{APP_NAME}] All systems ready ✅",file=sys.stderr)
 
-startup()
-
 if __name__ == "__main__":
+    startup()
     mcp.run()
