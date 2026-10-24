@@ -1,14 +1,17 @@
 """
 server.py — The main FastMCP entry point.
 
-Changes vs. original:
- - Uses streamable-http transport (not stdio) so it is reachable via a URL.
- - Reads X-User-Email header on every request → resolves/creates user → sets
-   per-request ContextVar so all service queries are scoped to that user.
+Uses streamable-http so Claude/ChatGPT can reach the server by URL.
+Identifies the user from (in order):
+  1. X-User-Email header
+  2. ?email= query param
+  3. DEFAULT_USER_EMAIL env var (needed for ChatGPT / Claude web, which
+     have no custom-header field)
 """
 import builtins
 import functools
 import sys
+from urllib.parse import parse_qs
 
 builtins.print = functools.partial(builtins.print, file=sys.stderr)
 import os
@@ -16,11 +19,9 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastmcp import FastMCP
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from src.config import APP_NAME, APP_VERSION
+from src.config import APP_NAME, APP_VERSION, DEFAULT_USER_EMAIL
 from src.database.db import init_db
 from src.database.migrations import run_migrations
 from src.auth.user_context import resolve_user
@@ -30,36 +31,54 @@ mcp = FastMCP(f"{APP_NAME} v{APP_VERSION}")
 
 
 # ── Auth Middleware ────────────────────────────────────────────────────────────
-class UserEmailMiddleware(BaseHTTPMiddleware):
-    """
-    Reads the X-User-Email header from every incoming HTTP request.
-    Resolves (or creates) the matching user row and stores the user_id in
-    a ContextVar so every tool call in that request is automatically scoped.
-    """
-    async def dispatch(self, request: Request, call_next):
-        # Health-check / non-MCP paths don't need auth
-        if request.url.path in ("/health", "/"):
-            return await call_next(request)
+# Pure ASGI middleware (not BaseHTTPMiddleware) so the user ContextVar is
+# visible to FastMCP tool handlers on the same request.
+class UserEmailMiddleware:
+    def __init__(self, app):
+        self.app = app
 
-        email = request.headers.get("X-User-Email", "").strip()
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path") or ""
+        if path in ("/health", "/"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1")
+            for k, v in scope.get("headers", [])
+        }
+        email = headers.get("x-user-email", "").strip()
         if not email:
-            return JSONResponse(
+            qs = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+            email = (qs.get("email") or [""])[0].strip()
+        if not email:
+            email = DEFAULT_USER_EMAIL
+
+        if not email:
+            response = JSONResponse(
                 status_code=401,
                 content={
                     "error": (
-                        "Missing X-User-Email header. "
-                        "In your Claude custom connector settings add a header: "
-                        "X-User-Email: your@email.com"
+                        "No user email. Set DEFAULT_USER_EMAIL on the server, "
+                        "or send header X-User-Email / query ?email="
                     )
-                }
+                },
             )
+            await response(scope, receive, send)
+            return
 
         try:
             resolve_user(email)
         except Exception as exc:
-            return JSONResponse(status_code=500, content={"error": str(exc)})
+            response = JSONResponse(status_code=500, content={"error": str(exc)})
+            await response(scope, receive, send)
+            return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
 
 # ── Register all tool groups ───────────────────────────────────────────────────
@@ -88,9 +107,7 @@ def startup():
 
 if __name__ == "__main__":
     startup()
-    # Get the underlying Starlette app from FastMCP and wrap it with our middleware
-    app = mcp.http_app(path="/mcp")
-    app.add_middleware(UserEmailMiddleware)
+    app = UserEmailMiddleware(mcp.http_app(path="/mcp"))
 
     import uvicorn
     port = int(os.environ.get("PORT", 8000))

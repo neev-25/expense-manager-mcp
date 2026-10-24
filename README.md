@@ -43,22 +43,25 @@ The assistant figures out which tool to call and handles the rest.
 
 ## 🚀 Quick Start — Connect to Your Assistant
 
-This server is hosted and exposes an HTTP endpoint. Each user is identified by their **email address** sent as a custom header — no signup, no password.
+This server is hosted and exposes an HTTP endpoint. ChatGPT and Claude **web** cannot send a custom email header, so set `DEFAULT_USER_EMAIL` on the host (Render). That account is used for every request that has no header.
 
-### Connect with Claude (Web, Desktop, or Mobile)
+> Anyone with the server URL can then use that same expense account. Treat the URL as private.
 
-1. Open **Settings → Connectors** in Claude.
-2. Click **Add custom connector**.
-3. Paste the server URL: `https://your-deployed-url/mcp`
-4. Add a custom header:
-   - **Name:** `X-User-Email`
-   - **Value:** `your@email.com`
-5. Give it a name, e.g. `Smart Expense`, and save.
-6. Enable it for your conversation and start chatting.
+### Connect with Claude (Web)
 
-> 💡 **Your data is completely private.** Each unique email address gets its own isolated slice of the database. No other user can see or affect your expenses.
+1. Open **Settings → Connectors** → **Add custom connector**.
+2. Paste: `https://your-deployed-url/mcp`
+3. Authentication: **No sign-in**. Transport: **Streamable HTTP**.
+4. Save, enable it, and chat.
 
-**Claude Desktop (`claude_desktop_config.json`) alternative:**
+### Connect with ChatGPT
+
+1. **Settings → Apps & Connectors → Advanced Settings** → enable **Developer mode**.
+2. Create a connector with URL `https://your-deployed-url/mcp`.
+3. Authentication: **No authentication**. Check the trust box and create it.
+4. Enable it per conversation via the **+** button.
+
+### Claude Desktop (optional header)
 
 ```json
 {
@@ -72,15 +75,6 @@ This server is hosted and exposes an HTTP endpoint. Each user is identified by t
   }
 }
 ```
-
-### Connect with ChatGPT
-
-1. Go to **Settings → Apps & Connectors → Advanced Settings** and enable **Developer mode**.
-2. Create a new connector with MCP server URL: `https://your-deployed-url/mcp`
-3. Add header `X-User-Email: your@email.com`.
-4. Enable it per conversation via the **+** button.
-
-> Note: the connector must be re-enabled per conversation — this is a ChatGPT behavior.
 
 ---
 
@@ -118,6 +112,7 @@ Then point Claude Desktop at your local instance:
 | Variable | Purpose | Default |
 |---|---|---|
 | `NEON_DATABASE_URL` | Postgres connection string | required |
+| `DEFAULT_USER_EMAIL` | Account used when ChatGPT/Claude send no `X-User-Email` header | empty (requests fail) |
 | `REPORTS_DIR` | Directory for CSV/Excel reports | `/tmp/reports` |
 | `PORT` | HTTP server port | `8000` |
 
