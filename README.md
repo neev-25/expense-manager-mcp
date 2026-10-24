@@ -43,26 +43,31 @@ The assistant figures out which tool to call and handles the rest.
 
 ## 🚀 Quick Start — Connect to Your Assistant
 
-This server is hosted on **FastMCP Cloud**, so there's nothing to install — you just point your assistant at the server URL below.
+This server is hosted and exposes an HTTP endpoint. Each user is identified by their **email address** sent as a custom header — no signup, no password.
 
-> Replace `https://your-project.fastmcp.app/mcp` with your actual FastMCP Cloud deployment URL throughout this section.
+### Connect with Claude (Web, Desktop, or Mobile)
 
-### Connect with Claude (Desktop, Web, or Mobile)
-
-1. Open **Settings → Connectors** in Claude (web/desktop) or ask Claude to open its connector settings.
+1. Open **Settings → Connectors** in Claude.
 2. Click **Add custom connector**.
-3. Paste the server URL: `https://your-project.fastmcp.app/mcp`
-4. Give it a name, e.g. `Smart Expense`.
-5. Save, then enable it for your conversation.
-6. Start chatting — e.g. *"Add a ₹200 coffee expense today, paid by cash."*
+3. Paste the server URL: `https://your-deployed-url/mcp`
+4. Add a custom header:
+   - **Name:** `X-User-Email`
+   - **Value:** `your@email.com`
+5. Give it a name, e.g. `Smart Expense`, and save.
+6. Enable it for your conversation and start chatting.
 
-**Claude Desktop (local config) alternative** — add this to your `claude_desktop_config.json`:
+> 💡 **Your data is completely private.** Each unique email address gets its own isolated slice of the database. No other user can see or affect your expenses.
+
+**Claude Desktop (`claude_desktop_config.json`) alternative:**
 
 ```json
 {
   "mcpServers": {
     "smart-expense-mcp": {
-      "url": "https://expense-manager-mcp.fastmcp.app/mcp"
+      "url": "https://your-deployed-url/mcp",
+      "headers": {
+        "X-User-Email": "your@email.com"
+      }
     }
   }
 }
@@ -70,31 +75,29 @@ This server is hosted on **FastMCP Cloud**, so there's nothing to install — yo
 
 ### Connect with ChatGPT
 
-ChatGPT calls remote MCP servers through **Developer Mode** (currently available on Plus, Pro, Business, Enterprise, and Edu plans):
+1. Go to **Settings → Apps & Connectors → Advanced Settings** and enable **Developer mode**.
+2. Create a new connector with MCP server URL: `https://your-deployed-url/mcp`
+3. Add header `X-User-Email: your@email.com`.
+4. Enable it per conversation via the **+** button.
 
-1. In ChatGPT, go to **Settings → Apps & Connectors → Advanced Settings**.
-2. Toggle **Developer mode** ON.
-3. Go back to **Apps**, click **Create**, and choose to add a custom app/connector.
-4. Fill in:
-   - **Name:** `Smart Expense`
-   - **MCP server URL:** `https://expense-manager-mcp.fastmcp.app/mcp`
-5. Click **Create**. ChatGPT will list the tools the server exposes.
-6. In a new chat, click the **+** button → **More** → select **Smart Expense** to enable it for that conversation.
-7. Start chatting — e.g. *"Show my quick stats for this month."*
-
-> Note: the connector must be re-enabled per conversation — this is a ChatGPT behavior, not a limitation of this server.
+> Note: the connector must be re-enabled per conversation — this is a ChatGPT behavior.
 
 ---
 
 ## 🛠️ Local Development
 
-If you want to run or modify the server yourself:
-
 ```bash
 git clone https://github.com/<your-username>/expense-agent.git
 cd expense-agent
 uv sync
-uv run python src/server.py
+uv run python src/server.py   # starts HTTP server on port 8000
+```
+
+For first-time Neon setup (run once):
+```bash
+uv run python migrate_add_user_id.py
+# Optional: attribute any pre-existing rows to an email:
+uv run python migrate_add_user_id.py --attribute=your@email.com
 ```
 
 Then point Claude Desktop at your local instance:
@@ -103,9 +106,8 @@ Then point Claude Desktop at your local instance:
 {
   "mcpServers": {
     "smart-expense-mcp": {
-      "command": "uv",
-      "args": ["run", "python", "src/server.py"],
-      "cwd": "/path/to/expense-agent"
+      "url": "http://localhost:8000/mcp",
+      "headers": { "X-User-Email": "your@email.com" }
     }
   }
 }
@@ -115,10 +117,9 @@ Then point Claude Desktop at your local instance:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `DB_DIR` | Directory where `expenses.db` is stored | project root (local) |
-| `REPORTS_DIR` | Directory where generated CSV/Excel reports are saved | `<DB_DIR>/reports` |
-
-> ⚠️ **On FastMCP Cloud**, the local filesystem is not guaranteed to persist across restarts/redeploys. For production use with real user data, back this server with a hosted database (e.g. Turso/libSQL or Postgres) rather than a local SQLite file. See [`docs/persistence.md`](docs/persistence.md) if you're migrating.
+| `NEON_DATABASE_URL` | Postgres connection string | required |
+| `REPORTS_DIR` | Directory for CSV/Excel reports | `/tmp/reports` |
+| `PORT` | HTTP server port | `8000` |
 
 ---
 

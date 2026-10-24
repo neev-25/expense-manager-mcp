@@ -1,11 +1,13 @@
 """
 tools/event_tools.py — MCP tools for event-based group expense splitting.
+All DB operations are now scoped to the current user_id.
 """
 from __future__ import annotations
 from typing import Optional
 
 from src.services import split_service as svc
 from src.schemas.splitwise import EventCreate, EventExpenseCreate
+from src.database.db import get_connection, get_current_user_id
 
 
 def register(mcp):
@@ -54,10 +56,6 @@ def register(mcp):
           "custom"     → supply split_data={"friend_id": amount, ...} summing to total
 
         Returns the computed split immediately so you can verify it.
-
-        Example:
-          Hotel ₹4000 paid by Neev, split equally among 4 friends:
-          → each owes ₹1000
         """
         return svc.add_event_expense(EventExpenseCreate(
             event_id=event_id, title=title, amount=amount,
@@ -74,17 +72,17 @@ def register(mcp):
         - All expenses
         - Per-member net balances
         - Minimum settlement transactions (who pays whom, how much)
-
-        This uses the greedy two-pointer algorithm to minimize the number of transactions.
         """
         return svc.event_summary(event_id)
 
     @mcp.tool()
     def list_events() -> list[dict]:
-        """List all events (active and closed)."""
-        from src.database.db import get_connection
+        """List all events (active and closed) for the current user."""
+        uid = get_current_user_id()
         with get_connection() as conn:
-            rows = conn.execute("SELECT * FROM events ORDER BY created_at DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM events WHERE user_id=%s ORDER BY created_at DESC", (uid,)
+            ).fetchall()
         return [dict(r) for r in rows]
 
     @mcp.tool()
