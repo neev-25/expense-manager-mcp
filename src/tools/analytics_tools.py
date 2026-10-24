@@ -1,13 +1,12 @@
 """
 tools/analytics_tools.py — MCP tools for analytics, budgets, and recurring expenses.
-All DB operations are now scoped to the current user_id.
 """
 from __future__ import annotations
 from typing import Optional
 from datetime import date
 
 from src.services import analytics_service as svc
-from src.database.db import get_connection, get_current_user_id
+from src.database.db import get_connection
 from src.config import RECURRING_FREQUENCIES
 
 
@@ -71,27 +70,24 @@ def register(mcp):
         """
         if frequency not in RECURRING_FREQUENCIES:
             raise ValueError(f"frequency must be one of {RECURRING_FREQUENCIES}")
-        uid = get_current_user_id()
         with get_connection() as conn:
             cur = conn.execute("""
                 INSERT INTO recurring_expenses
-                    (user_id, title, amount, category_id, payment_method, frequency, next_due_date)
-                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
-            """, (uid, title, amount, category_id, payment_method, frequency, next_due_date))
-            row = cur.fetchone()
-        return {"status": "ok", "id": row["id"], "title": title}
+                    (title, amount, category_id, payment_method, frequency, next_due_date)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (title, amount, category_id, payment_method, frequency, next_due_date))
+        return {"status": "ok", "id": cur.lastrowid, "title": title}
 
     @mcp.tool()
     def list_recurring() -> list[dict]:
         """List all active recurring expenses."""
-        uid = get_current_user_id()
         with get_connection() as conn:
             rows = conn.execute("""
                 SELECT r.*, c.name AS category_name
                 FROM recurring_expenses r
                 LEFT JOIN categories c ON r.category_id = c.id
-                WHERE r.is_active=1 AND r.user_id=%s ORDER BY r.next_due_date
-            """, (uid,)).fetchall()
+                WHERE r.is_active=1 ORDER BY r.next_due_date
+            """).fetchall()
         return [dict(r) for r in rows]
 
     @mcp.tool()
@@ -102,8 +98,6 @@ def register(mcp):
         Call this daily or at server startup.
         """
         from dateutil.relativedelta import relativedelta
-        from datetime import datetime as dt
-        uid = get_current_user_id()
         today = date.today()
         today_str = today.isoformat()
         created = []
@@ -111,19 +105,22 @@ def register(mcp):
         with get_connection() as conn:
             due = conn.execute("""
                 SELECT * FROM recurring_expenses
-                WHERE is_active=1 AND user_id=%s AND next_due_date <= %s
-            """, (uid, today_str)).fetchall()
+                WHERE is_active=1 AND next_due_date <= ?
+            """, (today_str,)).fetchall()
 
             for r in due:
+                # Create the expense
                 conn.execute("""
                     INSERT INTO expenses
-                        (user_id, title, amount, category_id, payment_method, expense_date, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (uid, r["title"], r["amount"], r["category_id"],
+                        (title, amount, category_id, payment_method, expense_date, notes)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (r["title"], r["amount"], r["category_id"],
                       r["payment_method"], r["next_due_date"],
                       f"Auto-created from recurring rule #{r['id']}"))
 
-                due_date = dt.strptime(r["next_due_date"], "%Y-%m-%d").date()
+                # Advance next_due_date
+                from datetime import datetime
+                due_date = datetime.strptime(r["next_due_date"], "%Y-%m-%d").date()
                 freq = r["frequency"]
                 if freq == "daily":
                     next_due = due_date + relativedelta(days=1)
@@ -131,11 +128,11 @@ def register(mcp):
                     next_due = due_date + relativedelta(weeks=1)
                 elif freq == "monthly":
                     next_due = due_date + relativedelta(months=1)
-                else:
+                else:  # yearly
                     next_due = due_date + relativedelta(years=1)
 
                 conn.execute(
-                    "UPDATE recurring_expenses SET next_due_date=%s WHERE id=%s",
+                    "UPDATE recurring_expenses SET next_due_date=? WHERE id=?",
                     (next_due.isoformat(), r["id"])
                 )
                 created.append({"title": r["title"], "date": r["next_due_date"]})

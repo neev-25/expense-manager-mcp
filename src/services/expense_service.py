@@ -1,109 +1,106 @@
 """
 services/expense_service.py — All expense CRUD and the filtering engine.
 
-All functions now accept user_id and scope every query to that value,
-ensuring complete data isolation between users.
+The filtering engine is the most interesting part here: it builds a SQL
+WHERE clause dynamically based on whatever filters the caller provides.
+This supports 15+ filter dimensions without any hard-coded query branches.
 """
 from __future__ import annotations
 from typing import Optional
 from datetime import datetime
 
-from src.database.db import get_connection, get_current_user_id
+from src.database.db import get_connection
 from src.schemas.expense import ExpenseCreate, ExpenseUpdate, ExpenseFilters
 
 
 def _row_to_dict(row) -> dict:
-    """Convert a psycopg2 RealDictRow to a plain dict."""
+    """Convert a sqlite3.Row to a plain dict."""
     return dict(row)
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
-def create_expense(data: ExpenseCreate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def create_expense(data: ExpenseCreate) -> dict:
     sql = """
         INSERT INTO expenses
-            (user_id, title, amount, description, category_id, subcategory_id, merchant,
+            (title, amount, description, category_id, subcategory_id, merchant,
              payment_method, currency, location, expense_date, receipt_url, tags, notes)
         VALUES
-            (%(user_id)s, %(title)s, %(amount)s, %(description)s, %(category_id)s, %(subcategory_id)s, %(merchant)s,
+            (%(title)s, %(amount)s, %(description)s, %(category_id)s, %(subcategory_id)s, %(merchant)s,
              %(payment_method)s, %(currency)s, %(location)s, %(expense_date)s, %(receipt_url)s, %(tags)s, %(notes)s)
         RETURNING id
     """
-    params = data.model_dump()
-    params["user_id"] = uid
     with get_connection() as conn:
-        cur = conn.execute(sql, params)
+        cur = conn.execute(sql, data.model_dump())
         new_id = cur.fetchone()["id"]
-    return get_expense(new_id, uid)
+    return get_expense(new_id)
 
 
 # ── Read ──────────────────────────────────────────────────────────────────────
-def get_expense(expense_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def get_expense(expense_id: int) -> dict:
     sql = """
         SELECT e.*, c.name AS category_name, s.name AS subcategory_name
         FROM expenses e
         LEFT JOIN categories c ON e.category_id = c.id
         LEFT JOIN subcategories s ON e.subcategory_id = s.id
-        WHERE e.id = %s AND e.user_id = %s
+        WHERE e.id = %s
     """
     with get_connection() as conn:
-        row = conn.execute(sql, (expense_id, uid)).fetchone()
+        row = conn.execute(sql, (expense_id,)).fetchone()
     if not row:
         raise ValueError(f"Expense with id={expense_id} not found.")
     return _row_to_dict(row)
 
 
 # ── Update ────────────────────────────────────────────────────────────────────
-def update_expense(expense_id: int, data: ExpenseUpdate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def update_expense(expense_id: int, data: ExpenseUpdate) -> dict:
+    # Only update fields that were actually provided (not None)
     fields = {k: v for k, v in data.model_dump().items() if v is not None}
     if not fields:
         raise ValueError("No fields provided for update.")
 
     fields["updated_at"] = datetime.now().isoformat()
-    set_clause = ", ".join(f"{col} = %({col})s" for col in fields)
+    set_clause = ", ".join(f"{col} = :{col}" for col in fields)
     fields["id"] = expense_id
-    fields["user_id"] = uid
 
     with get_connection() as conn:
-        conn.execute(
-            f"UPDATE expenses SET {set_clause} WHERE id = %(id)s AND user_id = %(user_id)s",
-            fields
-        )
-    return get_expense(expense_id, uid)
+        conn.execute(f"UPDATE expenses SET {set_clause} WHERE id = %(id)s", fields)
+    return get_expense(expense_id)
 
 
 # ── Soft Delete / Restore ─────────────────────────────────────────────────────
-def delete_expense(expense_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def delete_expense(expense_id: int) -> dict:
+    """Soft delete — marks is_deleted=1 so it can be restored later."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE expenses SET is_deleted=1, updated_at=%s WHERE id=%s AND user_id=%s",
-            (datetime.now().isoformat(), expense_id, uid)
+            "UPDATE expenses SET is_deleted=1, updated_at=%s WHERE id=%s",
+            (datetime.now().isoformat(), expense_id)
         )
     return {"status": "deleted", "id": expense_id}
 
 
-def restore_expense(expense_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def restore_expense(expense_id: int) -> dict:
+    """Restore a soft-deleted expense."""
     with get_connection() as conn:
         conn.execute(
-            "UPDATE expenses SET is_deleted=0, updated_at=%s WHERE id=%s AND user_id=%s",
-            (datetime.now().isoformat(), expense_id, uid)
+            "UPDATE expenses SET is_deleted=0, updated_at=%s WHERE id=%s",
+            (datetime.now().isoformat(), expense_id)
         )
-    return get_expense(expense_id, uid)
+    return get_expense(expense_id)
 
 
 # ── Powerful Filtering Engine ─────────────────────────────────────────────────
-def list_expenses(filters: Optional[ExpenseFilters] = None, user_id: int | None = None) -> list[dict]:
-    """Build a dynamic SQL query from an ExpenseFilters object, scoped to user_id."""
-    uid = user_id if user_id is not None else get_current_user_id()
+def list_expenses(filters: Optional[ExpenseFilters] = None) -> list[dict]:
+    """
+    Build a dynamic SQL query from an ExpenseFilters object.
+
+    Design pattern: Accumulate conditions in a list, then join with AND.
+    This keeps the code readable and avoids nested if-else chains.
+    """
     if filters is None:
         filters = ExpenseFilters()
 
-    conditions: list[str] = ["e.user_id = %(user_id)s"]
-    params: dict = {"user_id": uid}
+    conditions: list[str] = []
+    params: dict = {}
 
     # Soft-delete filter (default: hide deleted)
     if not filters.include_deleted:
@@ -170,7 +167,7 @@ def list_expenses(filters: Optional[ExpenseFilters] = None, user_id: int | None 
         """)
         params["event_id"] = filters.event_id
 
-    where_clause = "WHERE " + " AND ".join(conditions)
+    where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 
     sql = f"""
         SELECT e.*,

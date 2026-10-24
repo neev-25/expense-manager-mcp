@@ -1,11 +1,10 @@
 """
 services/analytics_service.py — Spending analytics and budget tracking.
-All queries are now scoped to user_id for per-user data isolation.
 """
 from __future__ import annotations
 from datetime import datetime
 
-from src.database.db import get_connection, get_current_user_id
+from src.database.db import get_connection
 from src.config import BUDGET_WARNING_PCT, BUDGET_DANGER_PCT
 
 
@@ -14,56 +13,61 @@ def _row_to_dict(row) -> dict:
 
 
 # ── Monthly Summary ───────────────────────────────────────────────────────────
-def monthly_summary(year: int, month: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def monthly_summary(year: int, month: int) -> dict:
+    """Full breakdown for a given month: total, by category, by payment method."""
     m_str = f"{month:02d}"
     y_str = str(year)
 
     with get_connection() as conn:
+        # Overall totals
         totals = conn.execute("""
             SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
             FROM expenses
-            WHERE is_deleted=0 AND user_id=%s
+            WHERE is_deleted=0
               AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
               AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
-        """, (uid, y_str, m_str)).fetchone()
+        """, (y_str, m_str)).fetchone()
 
+        # Days in month for avg calculation
         import calendar
         days_in_month = calendar.monthrange(year, month)[1]
 
+        # By category
         by_cat = conn.execute("""
             SELECT COALESCE(c.name, 'Uncategorized') AS category,
                    SUM(e.amount) AS total,
                    COUNT(*) AS count
             FROM expenses e
             LEFT JOIN categories c ON e.category_id = c.id
-            WHERE e.is_deleted=0 AND e.user_id=%s
+            WHERE e.is_deleted=0
               AND SUBSTRING(CAST(e.expense_date AS text) FROM 1 FOR 4) = %s
               AND SUBSTRING(CAST(e.expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY category
             ORDER BY total DESC
-        """, (uid, y_str, m_str)).fetchall()
+        """, (y_str, m_str)).fetchall()
 
+        # By payment method
         by_pay = conn.execute("""
             SELECT payment_method, SUM(amount) AS total, COUNT(*) AS count
             FROM expenses
-            WHERE is_deleted=0 AND user_id=%s
+            WHERE is_deleted=0
               AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
               AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY payment_method
             ORDER BY total DESC
-        """, (uid, y_str, m_str)).fetchall()
+        """, (y_str, m_str)).fetchall()
 
+        # Top merchant
         top_merchant = conn.execute("""
             SELECT merchant, SUM(amount) AS total
             FROM expenses
-            WHERE is_deleted=0 AND merchant != '' AND user_id=%s
+            WHERE is_deleted=0 AND merchant != ''
               AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
               AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
             GROUP BY merchant
             ORDER BY total DESC
             LIMIT 1
-        """, (uid, y_str, m_str)).fetchone()
+        """, (y_str, m_str)).fetchone()
 
     grand_total = totals["total"] or 0
     category_list = []
@@ -88,19 +92,19 @@ def monthly_summary(year: int, month: int, user_id: int | None = None) -> dict:
 
 
 # ── Yearly Summary ────────────────────────────────────────────────────────────
-def yearly_summary(year: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def yearly_summary(year: int) -> dict:
+    """Month-by-month breakdown for a full year."""
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) AS month,
                    SUM(amount) AS total,
                    COUNT(*) AS count
             FROM expenses
-            WHERE is_deleted=0 AND user_id=%s
+            WHERE is_deleted=0
               AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
             GROUP BY month
             ORDER BY month
-        """, (uid, str(year))).fetchall()
+        """, (str(year),)).fetchall()
 
     months_data = {str(i).zfill(2): {"total": 0, "count": 0} for i in range(1, 13)}
     for r in rows:
@@ -115,10 +119,10 @@ def yearly_summary(year: int, user_id: int | None = None) -> dict:
 
 
 # ── Category Summary ──────────────────────────────────────────────────────────
-def category_summary(year: int | None = None, month: int | None = None, user_id: int | None = None) -> list[dict]:
-    uid = user_id if user_id is not None else get_current_user_id()
-    conditions = ["e.is_deleted = 0", "e.user_id = %s"]
-    params: list = [uid]
+def category_summary(year: int | None = None, month: int | None = None) -> list[dict]:
+    """Spending per category, optionally filtered by year/month."""
+    conditions = ["e.is_deleted = 0"]
+    params: list = []
 
     if year:
         conditions.append("SUBSTRING(CAST(e.expense_date AS text) FROM 1 FOR 4) = %s")
@@ -137,7 +141,7 @@ def category_summary(year: int | None = None, month: int | None = None, user_id:
         FROM expenses e
         LEFT JOIN categories c ON e.category_id = c.id
         {where}
-        GROUP BY category, icon
+        GROUP BY category
         ORDER BY total DESC
     """
     with get_connection() as conn:
@@ -146,10 +150,9 @@ def category_summary(year: int | None = None, month: int | None = None, user_id:
 
 
 # ── Payment Method Summary ────────────────────────────────────────────────────
-def payment_summary(year: int | None = None, month: int | None = None, user_id: int | None = None) -> list[dict]:
-    uid = user_id if user_id is not None else get_current_user_id()
-    conditions = ["is_deleted = 0", "user_id = %s"]
-    params: list = [uid]
+def payment_summary(year: int | None = None, month: int | None = None) -> list[dict]:
+    conditions = ["is_deleted = 0"]
+    params: list = []
     if year:
         conditions.append("SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s")
         params.append(str(year))
@@ -169,8 +172,11 @@ def payment_summary(year: int | None = None, month: int | None = None, user_id: 
 
 
 # ── Budget Utilization ─────────────────────────────────────────────────────────
-def budget_summary(year: int, month: int, user_id: int | None = None) -> list[dict]:
-    uid = user_id if user_id is not None else get_current_user_id()
+def budget_summary(year: int, month: int) -> list[dict]:
+    """
+    Compare actual spending against budgets for a given month.
+    Returns alert levels: 'ok', 'warning' (≥80%), 'danger' (≥100%).
+    """
     m_str = f"{month:02d}"
     y_str = str(year)
 
@@ -179,19 +185,19 @@ def budget_summary(year: int, month: int, user_id: int | None = None) -> list[di
             SELECT b.id, b.amount AS budget_amount, c.name AS category, b.category_id
             FROM budgets b
             JOIN categories c ON b.category_id = c.id
-            WHERE b.user_id=%s AND b.month=%s AND b.year=%s
-        """, (uid, month, year)).fetchall()
+            WHERE b.month=%s AND b.year=%s
+        """, (month, year)).fetchall()
 
         results = []
         for b in budgets:
             spent_row = conn.execute("""
                 SELECT COALESCE(SUM(amount), 0) AS spent
                 FROM expenses
-                WHERE is_deleted=0 AND user_id=%s
+                WHERE is_deleted=0
                   AND category_id=%s
                   AND SUBSTRING(CAST(expense_date AS text) FROM 1 FOR 4) = %s
                   AND SUBSTRING(CAST(expense_date AS text) FROM 6 FOR 2) = %s
-            """, (uid, b["category_id"], y_str, m_str)).fetchone()
+            """, (b["category_id"], y_str, m_str)).fetchone()
 
             spent = spent_row["spent"]
             budget_amt = b["budget_amount"]
@@ -217,21 +223,12 @@ def budget_summary(year: int, month: int, user_id: int | None = None) -> list[di
 
 
 # ── Set / Update Budget ───────────────────────────────────────────────────────
-def set_budget(category_id: int, month: int, year: int, amount: float, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def set_budget(category_id: int, month: int, year: int, amount: float) -> dict:
+    """Upsert a budget for a category-month-year combination."""
     with get_connection() as conn:
-        existing = conn.execute(
-            "SELECT id FROM budgets WHERE user_id=%s AND category_id=%s AND month=%s AND year=%s",
-            (uid, category_id, month, year)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE budgets SET amount=%s WHERE id=%s",
-                (amount, existing["id"])
-            )
-        else:
-            conn.execute(
-                "INSERT INTO budgets(user_id, category_id, month, year, amount) VALUES (%s,%s,%s,%s,%s)",
-                (uid, category_id, month, year, amount)
-            )
+        conn.execute("""
+            INSERT INTO budgets(category_id, month, year, amount)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT(category_id, month, year) DO UPDATE SET amount=excluded.amount
+        """, (category_id, month, year, amount))
     return {"status": "ok", "category_id": category_id, "month": month, "year": year, "amount": amount}

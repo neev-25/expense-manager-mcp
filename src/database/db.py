@@ -4,35 +4,13 @@ db.py — Database connection and initialisation helpers.
 Key patterns used here:
   - psycopg2.extras.RealDictCursor so query results behave like dicts.
   - A single `init_db()` function creates all tables on server start.
-  - A ContextVar stores the current user_id per request (set by auth middleware).
 """
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from contextlib import contextmanager
-from contextvars import ContextVar
 
 from src.config import NEON_DATABASE_URL
 from src.database.models import ALL_TABLES
-
-# Per-request context variable holding the resolved user_id.
-# Set by the auth middleware before any tool executes.
-_current_user_id: ContextVar[int | None] = ContextVar("_current_user_id", default=None)
-
-
-def get_current_user_id() -> int:
-    """Return the user_id for the current MCP request. Raises if not set."""
-    uid = _current_user_id.get()
-    if uid is None:
-        raise ValueError(
-            "No authenticated user found. "
-            "Please add the header X-User-Email: your@email.com to your connector settings."
-        )
-    return uid
-
-
-def set_current_user_id(uid: int) -> None:
-    """Called by auth middleware to bind a user_id to the current async context."""
-    _current_user_id.set(uid)
 
 
 class PostgresConnWrapper:

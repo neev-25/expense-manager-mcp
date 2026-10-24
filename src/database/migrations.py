@@ -1,9 +1,9 @@
 """
 migrations.py — Seed data for categories/subcategories.
 
-Seed is now per-user: each new user gets their own copy of the default
-categories / subcategories. Calling it twice for the same user is safe
-because of ON CONFLICT DO NOTHING.
+Run this once after init_db() to populate sensible defaults.
+The function is idempotent — calling it twice won't duplicate data
+because of the INSERT OR IGNORE pattern and the UNIQUE constraint.
 """
 from src.database.db import get_connection
 
@@ -52,39 +52,27 @@ DEFAULT_CATEGORIES: list[dict] = [
 ]
 
 
-def seed_categories(user_id: int) -> None:
-    """Insert default categories and subcategories for a user if they don't exist yet."""
+def seed_categories() -> None:
+    """Insert default categories and subcategories if they don't exist yet."""
     with get_connection() as conn:
         for cat in DEFAULT_CATEGORIES:
-            # Check if this category already exists for this user
-            existing = conn.execute(
-                "SELECT id FROM categories WHERE user_id = %s AND name = %s",
-                (user_id, cat["name"])
+            conn.execute(
+                "INSERT INTO categories(name, icon) VALUES (%s, %s) ON CONFLICT (name) DO NOTHING",
+                (cat["name"], cat["icon"])
+            )
+            row = conn.execute(
+                "SELECT id FROM categories WHERE name = %s", (cat["name"],)
             ).fetchone()
-            if existing:
-                cat_id = existing["id"]
-            else:
-                row = conn.execute(
-                    "INSERT INTO categories(user_id, name, icon) VALUES (%s, %s, %s) RETURNING id",
-                    (user_id, cat["name"], cat["icon"])
-                ).fetchone()
-                cat_id = row["id"]
+            cat_id = row["id"]
 
             for sub in cat["subs"]:
-                sub_exists = conn.execute(
-                    "SELECT id FROM subcategories WHERE user_id=%s AND category_id=%s AND name=%s",
-                    (user_id, cat_id, sub)
-                ).fetchone()
-                if not sub_exists:
-                    conn.execute(
-                        "INSERT INTO subcategories(user_id, category_id, name) VALUES (%s, %s, %s)",
-                        (user_id, cat_id, sub)
-                    )
-    print(f"[DB] Default categories seeded for user_id={user_id}.")
+                conn.execute(
+                    "INSERT INTO subcategories(category_id, name) VALUES (%s, %s) ON CONFLICT (category_id, name) DO NOTHING",
+                    (cat_id, sub)
+                )
+    print("[DB] Default categories seeded.")
 
 
 def run_migrations() -> None:
-    """Entry point — run all structural migrations in order."""
-    # Per-user seeding now happens in auth/user_context.py when a new user logs in.
-    # Nothing global to seed here anymore.
-    print("[DB] Migrations complete.")
+    """Entry point — run all migrations in order."""
+    seed_categories()

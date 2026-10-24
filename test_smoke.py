@@ -1,19 +1,11 @@
-"""Quick smoke test for the Smart Expense MCP (multi-user build)."""
+"""Quick smoke test for the Smart Expense MCP."""
 import sys
 sys.path.insert(0, ".")
 
-# ── Fake auth context ──────────────────────────────────────────────────────────
-# In production the middleware sets this from the X-User-Email header.
-# In tests we set it directly after creating/resolving a user.
-from src.database.db import init_db
-from src.database.migrations import run_migrations
-init_db()
-run_migrations()
+# 1. Boot the server (runs init_db + migrations)
+from src import server  # noqa: F401
 
-from src.auth.user_context import get_or_create_user, resolve_user
-resolve_user("test@example.com")   # sets ContextVar for this thread
-
-# ── Import service layer AFTER setting user context ────────────────────────────
+# 2. Test expense CRUD
 from src.services.expense_service import create_expense, get_expense, list_expenses, delete_expense, restore_expense
 from src.schemas.expense import ExpenseCreate, ExpenseFilters
 
@@ -27,10 +19,12 @@ fetched = get_expense(exp["id"])
 assert fetched["title"] == "Domino's Pizza"
 print("✅ get_expense OK")
 
+# Filter test
 results = list_expenses(ExpenseFilters(merchant="Domino", payment_method="UPI"))
 assert len(results) >= 1
 print(f"✅ list_expenses filter OK: {len(results)} result(s)")
 
+# Delete/restore
 delete_expense(exp["id"])
 deleted = list_expenses(ExpenseFilters(include_deleted=False))
 assert all(e["id"] != exp["id"] for e in deleted)
@@ -41,36 +35,35 @@ restored = get_expense(exp["id"])
 assert restored["is_deleted"] == 0
 print("✅ restore OK")
 
-# ── Analytics ─────────────────────────────────────────────────────────────────
+# 3. Test analytics
 from src.services.analytics_service import monthly_summary, set_budget, budget_summary
 summary = monthly_summary(2026, 7)
 print(f"✅ monthly_summary: total=₹{summary['total']}, count={summary['count']}")
 
 from src.database.db import get_connection
-from src.database.db import get_current_user_id
-uid = get_current_user_id()
 with get_connection() as c:
-    cat_id = c.execute("SELECT id FROM categories WHERE name='Food' AND user_id=%s", (uid,)).fetchone()["id"]
+    cat_id = c.execute("SELECT id FROM categories WHERE name='Food'").fetchone()["id"]
 
 set_budget(cat_id, 7, 2026, 5000)
 bs = budget_summary(2026, 7)
 print(f"✅ budget_summary: {bs}")
 
-# ── Settlement algorithm ───────────────────────────────────────────────────────
+# 4. Test settlement algorithm
 from src.services.settlement_service import compute_minimal_settlements
-net = {1: -100, 2: -50, 3: 150.0}
+net = {1: -100, 2: -50, 3: 150.0}  # 1 owes 100, 2 owes 50, 3 is owed 150
 names = {1: "A", 2: "B", 3: "C"}
 txns = compute_minimal_settlements(net, names)
 print(f"✅ Settlement: {[t['display'] for t in txns]}")
-assert len(txns) == 2
+assert len(txns) == 2  # optimal: A→C and B→C
 
-# ── Events (isolation test: second user shouldn't see first user's events) ────
+# 5. Test event flow
 from src.services.split_service import add_friend, create_event, add_event_expense, event_summary
 from src.schemas.splitwise import FriendCreate, EventCreate, EventExpenseCreate
 
 r = add_friend(FriendCreate(name="Rahul"))
 p = add_friend(FriendCreate(name="Prince"))
 j = add_friend(FriendCreate(name="Jay"))
+me_id = r["id"]  # treat Rahul as "me" for this test
 
 event = create_event(EventCreate(
     title="Girnar Trip", member_ids=[r["id"], p["id"], j["id"]]
@@ -86,14 +79,8 @@ add_event_expense(EventExpenseCreate(
     paid_by_friend_id=p["id"], split_type="equal"
 ))
 
-ev_summary = event_summary(eid)
-print(f"✅ event_summary total=₹{ev_summary['total_spent']}")
-print(f"   Settlements: {[s['display'] for s in ev_summary['settlements']]}")
-
-# ── Isolation check: second user sees no data ─────────────────────────────────
-resolve_user("other@example.com")
-other_expenses = list_expenses(ExpenseFilters())
-assert len(other_expenses) == 0, f"Expected 0 for other user, got {len(other_expenses)}"
-print("✅ Isolation check: other user sees 0 expenses ✅")
+summary = event_summary(eid)
+print(f"✅ event_summary total=₹{summary['total_spent']}")
+print(f"   Settlements: {[s['display'] for s in summary['settlements']]}")
 
 print("\n🎉 All smoke tests passed!")

@@ -1,12 +1,15 @@
 """
 services/split_service.py — Friend management, general balances, and event splits.
-All queries now scoped to user_id for per-user data isolation.
+
+Two systems:
+  A. General Balance: ad-hoc "I paid for Rahul" entries with net tracking.
+  B. Event-Based:    structured group expense splitting (equal/percentage/custom).
 """
 from __future__ import annotations
 import json
 from datetime import datetime
 
-from src.database.db import get_connection, get_current_user_id
+from src.database.db import get_connection
 from src.schemas.splitwise import FriendCreate, BalanceCreate, EventCreate, EventExpenseCreate
 
 
@@ -15,63 +18,64 @@ def _row_to_dict(row) -> dict:
 
 
 # ── A. Friends ────────────────────────────────────────────────────────────────
-def add_friend(data: FriendCreate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def add_friend(data: FriendCreate) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO friends(user_id, name, email, phone) VALUES (%s, %s, %s, %s) RETURNING id",
-            (uid, data.name, data.email, data.phone)
+            "INSERT INTO friends(name, email, phone) VALUES (%s, %s, %s) RETURNING id",
+            (data.name, data.email, data.phone)
         )
         return {"status": "ok", "id": cur.fetchone()["id"], "name": data.name}
 
 
-def list_friends(user_id: int | None = None) -> list[dict]:
-    uid = user_id if user_id is not None else get_current_user_id()
+def list_friends() -> list[dict]:
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT * FROM friends WHERE user_id=%s ORDER BY name", (uid,)
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM friends ORDER BY name").fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
-def get_friend(friend_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def get_friend(friend_id: int) -> dict:
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM friends WHERE id=%s AND user_id=%s", (friend_id, uid)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM friends WHERE id=%s", (friend_id,)).fetchone()
     if not row:
         raise ValueError(f"Friend id={friend_id} not found.")
     return _row_to_dict(row)
 
 
 # ── A. General Balances ───────────────────────────────────────────────────────
-def record_balance(data: BalanceCreate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def record_balance(data: BalanceCreate) -> dict:
+    """
+    Record a money exchange.
+    direction = "i_owe"    → friend owes me money
+    direction = "they_owe" → I owe the friend money
+    """
     if data.direction not in ("i_owe", "they_owe"):
         raise ValueError("direction must be 'i_owe' or 'they_owe'.")
 
     with get_connection() as conn:
         cur = conn.execute(
-            """INSERT INTO balances(user_id, friend_id, amount, direction, reason, expense_id)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (uid, data.friend_id, data.amount, data.direction, data.reason, data.expense_id)
+            """INSERT INTO balances(friend_id, amount, direction, reason, expense_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (data.friend_id, data.amount, data.direction, data.reason, data.expense_id)
         )
     return {"status": "ok", "balance_id": cur.fetchone()["id"]}
 
 
-def settle_balance(friend_id: int, amount: float | None = None, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def settle_balance(friend_id: int, amount: float | None = None) -> dict:
+    """
+    Mark balances as settled.
+    If amount is given, settle exactly that amount; otherwise settle all pending.
+    """
     with get_connection() as conn:
         if amount is None:
             conn.execute(
-                "UPDATE balances SET status='settled' WHERE friend_id=%s AND user_id=%s AND status='pending'",
-                (friend_id, uid)
+                "UPDATE balances SET status='settled' WHERE friend_id=%s AND status='pending'",
+                (friend_id,)
             )
         else:
+            # Mark individual rows until amount is consumed
             rows = conn.execute(
-                "SELECT * FROM balances WHERE friend_id=%s AND user_id=%s AND status='pending' ORDER BY id",
-                (friend_id, uid)
+                "SELECT * FROM balances WHERE friend_id=%s AND status='pending' ORDER BY id",
+                (friend_id,)
             ).fetchall()
             remaining = amount
             for r in rows:
@@ -83,13 +87,17 @@ def settle_balance(friend_id: int, amount: float | None = None, user_id: int | N
     return {"status": "ok", "friend_id": friend_id}
 
 
-def friend_balance_summary(friend_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def friend_balance_summary(friend_id: int) -> dict:
+    """
+    Net balance with a single friend.
+    Positive net → friend owes ME money.
+    Negative net → I owe the friend money.
+    """
     with get_connection() as conn:
-        friend = get_friend(friend_id, uid)
+        friend = get_friend(friend_id)
         rows = conn.execute(
-            "SELECT direction, SUM(amount) AS total FROM balances WHERE friend_id=%s AND user_id=%s AND status='pending' GROUP BY direction",
-            (friend_id, uid)
+            "SELECT direction, SUM(amount) AS total FROM balances WHERE friend_id=%s AND status='pending' GROUP BY direction",
+            (friend_id,)
         ).fetchall()
 
     they_owe_me = 0.0
@@ -114,19 +122,18 @@ def friend_balance_summary(friend_id: int, user_id: int | None = None) -> dict:
     }
 
 
-def overall_balance(user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def overall_balance() -> dict:
+    """Net balance across all friends (who owes you, who you owe)."""
     with get_connection() as conn:
         rows = conn.execute("""
             SELECT f.id, f.name,
                    COALESCE(SUM(CASE WHEN b.direction='they_owe' THEN b.amount ELSE 0 END), 0) AS they_owe_me,
                    COALESCE(SUM(CASE WHEN b.direction='i_owe'    THEN b.amount ELSE 0 END), 0) AS i_owe_them
             FROM friends f
-            LEFT JOIN balances b ON b.friend_id=f.id AND b.status='pending' AND b.user_id=%s
-            WHERE f.user_id=%s
+            LEFT JOIN balances b ON b.friend_id=f.id AND b.status='pending'
             GROUP BY f.id
             ORDER BY f.name
-        """, (uid, uid)).fetchall()
+        """).fetchall()
 
     friends_data = []
     total_receivable = 0.0
@@ -153,39 +160,37 @@ def overall_balance(user_id: int | None = None) -> dict:
 
 
 # ── B. Events ─────────────────────────────────────────────────────────────────
-def create_event(data: EventCreate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def create_event(data: EventCreate) -> dict:
     with get_connection() as conn:
         cur = conn.execute(
-            "INSERT INTO events(user_id, title, description, start_date, end_date) VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (uid, data.title, data.description, data.start_date, data.end_date)
+            "INSERT INTO events(title, description, start_date, end_date) VALUES (%s,%s,%s,%s) RETURNING id",
+            (data.title, data.description, data.start_date, data.end_date)
         )
         event_id = cur.fetchone()["id"]
         for fid in data.member_ids:
             conn.execute(
-                "INSERT INTO event_members(event_id, friend_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+                "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (%s,%s)",
                 (event_id, fid)
             )
     return {"status": "ok", "event_id": event_id, "title": data.title}
 
 
-def add_event_member(event_id: int, friend_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
-    # Verify event belongs to user
+def add_event_member(event_id: int, friend_id: int) -> dict:
     with get_connection() as conn:
-        row = conn.execute("SELECT id FROM events WHERE id=%s AND user_id=%s", (event_id, uid)).fetchone()
-        if not row:
-            raise ValueError(f"Event id={event_id} not found.")
         conn.execute(
-            "INSERT INTO event_members(event_id, friend_id) VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            "INSERT OR IGNORE INTO event_members(event_id, friend_id) VALUES (%s,%s)",
             (event_id, friend_id)
         )
     return {"status": "ok"}
 
 
-def add_event_expense(data: EventExpenseCreate, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def add_event_expense(data: EventExpenseCreate) -> dict:
+    """
+    Add an expense to an event and compute per-member splits.
 
+    Returns the computed split so the user can verify it immediately.
+    """
+    # Determine the set of members to split among
     with get_connection() as conn:
         member_rows = conn.execute(
             "SELECT friend_id FROM event_members WHERE event_id=%s", (data.event_id,)
@@ -193,6 +198,8 @@ def add_event_expense(data: EventExpenseCreate, user_id: int | None = None) -> d
     all_member_ids = [r["friend_id"] for r in member_rows]
 
     split_ids = data.included_member_ids if data.included_member_ids else all_member_ids
+
+    # Compute the split_data dict: {friend_id_str: amount_owed}
     computed_split: dict[str, float] = {}
 
     if data.split_type == "equal":
@@ -219,31 +226,31 @@ def add_event_expense(data: EventExpenseCreate, user_id: int | None = None) -> d
     with get_connection() as conn:
         cur = conn.execute("""
             INSERT INTO event_expenses
-                (user_id, event_id, title, amount, paid_by_friend_id, split_type, split_data)
-            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                (event_id, title, amount, paid_by_friend_id, split_type, split_data)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
         """, (
-            uid, data.event_id, data.title, data.amount,
+            data.event_id, data.title, data.amount,
             data.paid_by_friend_id, data.split_type,
             json.dumps(computed_split)
         ))
-        new_id = cur.fetchone()["id"]
 
     return {
         "status": "ok",
-        "event_expense_id": new_id,
+        "event_expense_id": cur.fetchone()["id"],
         "split": computed_split,
         "payer_id": data.paid_by_friend_id,
     }
 
 
-def event_summary(event_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def event_summary(event_id: int) -> dict:
+    """
+    Full event summary: members, expenses, per-member totals,
+    and the minimum settlement transactions.
+    """
     from src.services.settlement_service import compute_minimal_settlements
 
     with get_connection() as conn:
-        event = conn.execute(
-            "SELECT * FROM events WHERE id=%s AND user_id=%s", (event_id, uid)
-        ).fetchone()
+        event = conn.execute("SELECT * FROM events WHERE id=%s", (event_id,)).fetchone()
         if not event:
             raise ValueError(f"Event id={event_id} not found.")
 
@@ -254,12 +261,13 @@ def event_summary(event_id: int, user_id: int | None = None) -> dict:
         """, (event_id,)).fetchall()
 
         expenses_rows = conn.execute(
-            "SELECT * FROM event_expenses WHERE event_id=%s AND user_id=%s", (event_id, uid)
+            "SELECT * FROM event_expenses WHERE event_id=%s", (event_id,)
         ).fetchall()
 
     members = {r["id"]: r["name"] for r in members_rows}
     expenses = [_row_to_dict(r) for r in expenses_rows]
 
+    # Build net balance map: net[friend_id] = amount they are owed (positive) or owe (negative)
     net: dict[int, float] = {fid: 0.0 for fid in members}
     total_spent = 0.0
 
@@ -285,10 +293,7 @@ def event_summary(event_id: int, user_id: int | None = None) -> dict:
     }
 
 
-def close_event(event_id: int, user_id: int | None = None) -> dict:
-    uid = user_id if user_id is not None else get_current_user_id()
+def close_event(event_id: int) -> dict:
     with get_connection() as conn:
-        conn.execute(
-            "UPDATE events SET status='closed' WHERE id=%s AND user_id=%s", (event_id, uid)
-        )
+        conn.execute("UPDATE events SET status='closed' WHERE id=%s", (event_id,))
     return {"status": "closed", "event_id": event_id}

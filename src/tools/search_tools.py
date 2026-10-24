@@ -1,6 +1,15 @@
 """
-tools/search_tools.py — Natural language query dispatcher and report generation.
-All service calls are user-scoped automatically via get_current_user_id().
+tools/search_tools.py — Natural language query dispatcher.
+
+Instead of the user calling specific tool functions, they can ask free-text questions.
+This tool parses the intent and routes to the correct service.
+
+This is a rule-based NLP dispatcher (no LLM needed inside the MCP server — Claude
+itself handles NLP and calls this when the user asks natural language questions).
+
+The real "AI Search" magic happens at the Claude level: Claude reads the user's
+question, picks the right tool (e.g. list_expenses with month=7), and formats the result.
+This search_expenses tool acts as a convenience "catch-all" for complex queries.
 """
 from __future__ import annotations
 from typing import Optional
@@ -30,12 +39,21 @@ def register(mcp):
         """
         Natural language expense search.
 
+        Claude should use this when the user asks conversational questions about their spending.
+
         Examples:
           "How much did I spend on food this month?"
           "Show me Domino's expenses"
           "All UPI payments above ₹500 in June"
           "What did I spend at Girnar trip?"
+          "Show my expensive purchases in 2026"
+
+        Returns both the matching expenses AND a quick summary (total, count, avg).
         """
+        today = date.today()
+        effective_year  = year  or today.year
+        effective_month = month or today.month
+
         filters = ExpenseFilters(
             month=month, year=year,
             category_id=category_id,
@@ -124,6 +142,7 @@ def register(mcp):
         ws = wb.active
         ws.title = f"{year}-{month:02d}"
 
+        # Header row with styling
         headers = list(expenses[0].keys())
         header_fill = PatternFill("solid", fgColor="4472C4")
         header_font = Font(color="FFFFFF", bold=True)
@@ -133,10 +152,12 @@ def register(mcp):
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
 
+        # Data rows
         for row_idx, exp in enumerate(expenses, 2):
             for col_idx, key in enumerate(headers, 1):
                 ws.cell(row=row_idx, column=col_idx, value=exp.get(key))
 
+        # Auto-width columns
         for col in ws.columns:
             max_len = max(len(str(cell.value or "")) for cell in col)
             ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 40)
