@@ -13,8 +13,6 @@ load_dotenv()
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 NEON_DATABASE_URL = os.environ.get("NEON_DATABASE_URL", "")
-# Used when ChatGPT/Claude web cannot send X-User-Email (no custom-header UI).
-DEFAULT_USER_EMAIL = os.environ.get("DEFAULT_USER_EMAIL", "").strip()
 REPORTS_DIR = os.environ.get("REPORTS_DIR", "/tmp/reports")
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
